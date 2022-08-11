@@ -1,0 +1,23 @@
+[
+    {
+        "iconUrl": "https://upload.wikimedia.org/wikipedia/commons/2/2f/Korduene_Logo.png",
+        "fileHash": "sha256-d376c453beed0a499289f8c8ca884999d58e3d2b168628939b07f751314fbd58",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/aren8xpo/cloudstream.nfmirror",
+        "fileSize": 21001,
+        "status": 1,
+        "language": "en",
+        "authors": [
+            "aren8xpo"
+        ],
+        "tvTypes": [
+            "Movie",
+            "TvSeries"
+        ],
+        "version": 1,
+        "internalName": "NetflixMirrorProvider",
+        "description": "Ultimate Netflix Mirror Provider",
+        "url": "https://raw.githubusercontent.com/aren8xpo/cloudstream.nfmirror/builds/NetflixMirrorProvider.cs3",
+        "name": "NetflixMirrorProvider"
+    }
+]
