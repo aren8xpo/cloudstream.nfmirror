@@ -1,10 +1,20 @@
 package com.aloz.netflixmirror
 
 import com.lagradost.cloudstream3.*
+import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
+import com.lagradost.cloudstream3.plugins.Plugin
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import java.util.regex.Pattern
 import kotlin.random.Random
+
+@CloudstreamPlugin
+class NetflixMirrorUltimatePlugin : Plugin() {
+    override fun load(context: android.content.Context) {
+        // All providers should be registered in the load function
+        registerMainAPI(NetflixMirrorUltimate())
+    }
+}
 
 class NetflixMirrorUltimate : MainAPI() {
     override var name = "Netflix Mirror Ultimate"
