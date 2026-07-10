@@ -48,7 +48,7 @@ class NetflixMirrorUltimate : MainAPI() {
                 // This is a simplification, ideally we'd parse the data
                 "$source/embed/tv/$data"
             }
-            git add           val result = attemptExtraction(currentUrl)
+            val result = attemptExtraction(currentUrl)
             if (result != null) {
                 callback.invoke(result)
                 return true
