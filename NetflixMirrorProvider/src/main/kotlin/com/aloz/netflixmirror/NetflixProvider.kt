@@ -30,13 +30,19 @@ class NetflixMirrorUltimate : MainAPI() {
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         val items = mutableListOf<SearchResponse>()
         try {
+            // Updated selectors to find trending items more reliably
             val response = app.get("$mainUrl/trending")
             val document = Jsoup.parse(response.text)
             
-            document.select("a[href*='/movie/'], a[href*='/tv/']").forEach { element ->
-                val title = element.select(".title, .name, h3, span").first()?.text() ?: ""
-                val link = element.attr("href")
-                val poster = element.select("img").attr("data-src").ifEmpty { element.select("img").attr("src") }
+            // Look for any links that look like movies or shows
+            document.select("a[href*='/movie/'], a[href*='/tv/'], .movie-card, .item").forEach { element ->
+                val title = element.select(".title, .name, h3, span, b").first()?.text() 
+                    ?: element.attr("title")
+                    ?: element.text()
+                
+                val link = element.attr("href").ifEmpty { element.select("data-link").attr("data-link") }
+                val poster = element.select("img").attr("data-src")
+                    .ifEmpty { element.select("img").attr("src") }
                 
                 if (title.isNotEmpty() && link.isNotEmpty()) {
                     items.add(newMovieSearchResponse(title, link, TvType.Movie) {
@@ -45,6 +51,7 @@ class NetflixMirrorUltimate : MainAPI() {
                 }
             }
         } catch (e: Exception) {
+            // Return empty list on failure rather than crashing
         }
         
         return newHomePageResponse("Trending Now", items)
@@ -56,7 +63,7 @@ class NetflixMirrorUltimate : MainAPI() {
             val response = app.get("$mainUrl/search/$query")
             val document = Jsoup.parse(response.text)
             
-            document.select("a[href*='/movie/'], a[href*='/tv/']").forEach { element ->
+            document.select("a[href*='/movie/'], a[href*='/tv/'], .item").forEach { element ->
                 val title = element.select(".title, .name, h3").text().ifEmpty { element.text() }
                 val link = element.attr("href")
                 val poster = element.select("img").attr("data-src").ifEmpty { element.select("img").attr("src") }
@@ -95,8 +102,7 @@ class NetflixMirrorUltimate : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Standard embed format
-        val sources = listOf("https://vidsrc.pm", "https://vidsrc.xyz")
+        val sources = listOf("https://vidsrc.pm", "https://vidsrc.xyz", "https://2embed.cc")
         var found = false
         for (source in sources) {
             val currentUrl = "$source/embed/movie/$data"
