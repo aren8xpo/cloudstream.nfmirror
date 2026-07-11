@@ -1,0 +1,8 @@
+{
+  "name": "Netflix Mirror Repository",
+  "description": "Custom Cloudstream plugins including Netflix Mirror Ultimate",
+  "manifestVersion": 1,
+  "pluginLists": [
+    "https://raw.githubusercontent.com/aren8xpo/cloudstream.nfmirror/builds/plugins.json"
+  ]
+}
