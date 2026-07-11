@@ -12,40 +12,38 @@ import kotlin.random.Random
 @CloudstreamPlugin
 class NetflixMirrorUltimatePlugin : Plugin() {
     override fun load(context: android.content.Context) {
-        // All providers should be registered in the load function
         registerMainAPI(NetflixMirrorUltimate())
     }
 }
 
 class NetflixMirrorUltimate : MainAPI() {
     override var name = "Netflix Mirror Ultimate"
-    override var mainUrl = "https://vidsrc.to"
+    // Using a more scraper-friendly mirror as the primary base
+    override var mainUrl = "https://vidsrc.pm"
     override var supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
     override var hasMainPage = true
 
     private val USER_AGENTS = listOf(
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
     )
 
     private val MIRROR_SOURCES = listOf(
-        "https://vidsrc.to",
-        "https://vidsrc.me",
-        "https://2embed.me"
+        "https://vidsrc.pm",
+        "https://vidsrc.xyz",
+        "https://2embed.cc"
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         val items = mutableListOf<SearchResponse>()
         try {
-            // Using a more generic search for "popular" content if trending is blocked
+            // Attempt to get trending movies from a public source to avoid Cloudflare blocks
             val response = app.get("$mainUrl/trending")
             val document = Jsoup.parse(response.text)
             
-            // Fixed selectors for common mirror site layouts
-            document.select(".movie-item, .item, .card").forEach { element ->
-                val title = element.select(".title, .name, h3").text()
-                val link = element.select("a").attr("href")
+            document.select("a[href*='/movie/'], a[href*='/tv/']").forEach { element ->
+                val title = element.select(".title, .name, h3, span").first()?.text() ?: ""
+                val link = element.attr("href")
                 val poster = element.select("img").attr("data-src").ifEmpty { element.select("img").attr("src") }
                 
                 if (title.isNotEmpty() && link.isNotEmpty()) {
@@ -55,7 +53,7 @@ class NetflixMirrorUltimate : MainAPI() {
                 }
             }
         } catch (e: Exception) {
-            // Log error to app logs
+            // Return an empty list instead of crashing if the site is blocked
         }
         
         return newHomePageResponse("Trending Now", items)
@@ -67,9 +65,9 @@ class NetflixMirrorUltimate : MainAPI() {
             val response = app.get("$mainUrl/search/$query")
             val document = Jsoup.parse(response.text)
             
-            document.select(".movie-item, .item, .card").forEach { element ->
-                val title = element.select(".title, .name, h3").text()
-                val link = element.select("a").attr("href")
+            document.select("a[href*='/movie/'], a[href*='/tv/']").forEach { element ->
+                val title = element.select(".title, .name, h3").text().ifEmpty { element.text() }
+                val link = element.attr("href")
                 val poster = element.select("img").attr("data-src").ifEmpty { element.select("img").attr("src") }
                 
                 if (title.isNotEmpty() && link.isNotEmpty()) {
@@ -88,12 +86,12 @@ class NetflixMirrorUltimate : MainAPI() {
         val response = app.get(fullUrl)
         val document = Jsoup.parse(response.text)
         
-        val title = document.select(".title, h1").text().ifEmpty { "Unknown Title" }
+        val title = document.select(".title, h1").first()?.text() ?: "Unknown Content"
         val plot = document.select(".description, .plot, #description").text()
         val poster = document.select(".poster img, .cover img").attr("src")
         
-        // Extract ID for the mirror embeds
-        val id = if (url.contains("-")) url.substringAfterLast("-") else url.substringAfterLast("/")
+        // Extract ID for the mirror embeds (TMDB or IMDB ID)
+        val id = url.split("/").lastOrNull { it.isNotEmpty() } ?: url
 
         return newMovieLoadResponse(title, url, TvType.Movie, id) {
             this.plot = plot
@@ -109,44 +107,44 @@ class NetflixMirrorUltimate : MainAPI() {
     ): Boolean {
         var found = false
         for (source in MIRROR_SOURCES) {
-            val currentUrl = if (data.contains("tt")) {
+            // Standard embed format for most mirror sites
+            val currentUrl = if (data.startsWith("tt")) {
                  "$source/embed/movie/$data"
             } else {
-                 "$source/embed/$data"
+                 "$source/embed/movie/$data" // Fallback to movie path
             }
             
-            val result = attemptExtraction(currentUrl)
-            if (result != null) {
-                callback.invoke(result)
+            if (attemptExtraction(currentUrl, callback)) {
                 found = true
             }
         }
         return found
     }
 
-    private suspend fun attemptExtraction(url: String): ExtractorLink? {
-        try {
+    private suspend fun attemptExtraction(url: String, callback: (ExtractorLink) -> Unit): Boolean {
+        return try {
             val randomUA = USER_AGENTS[Random.nextInt(USER_AGENTS.size)]
             val headers = mapOf("Referer" to url, "User-Agent" to randomUA)
             val response = app.get(url, headers = headers)
 
-            // Look for m3u8 or mp4 links in the script or iframe tags
             val pattern = Pattern.compile("https://[^\"]+?\\.(?:m3u8|mp4)[^\"]*")
             val matcher = pattern.matcher(response.text)
-            if (matcher.find()) {
+            var internalFound = false
+            while (matcher.find()) {
                 val finalUrl = matcher.group().replace("\\/", "/")
-                return newExtractorLink(
-                    "Source",
+                callback.invoke(newExtractorLink(
+                    "Mirror Source",
                     "Mirror [${url.substringAfter("://").substringBefore("/")}]",
                     finalUrl,
                     type = if (finalUrl.contains("m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                 ) {
                     this.referer = url
-                }
+                })
+                internalFound = true
             }
+            internalFound
         } catch (e: Exception) {
-            return null
+            false
         }
-        return null
     }
 }
