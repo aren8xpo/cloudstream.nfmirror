@@ -51,12 +51,12 @@ class NetflixMirrorUltimate : MainAPI() {
 
             val response = app.get("$mainUrl/mobile/home?app=1", cookies = getCookies(), headers = getCommonHeaders())
             val document = Jsoup.parse(response.text)
-            
+
             document.select(".tray-container .item").forEach { element ->
                 val title = element.select(".title, .name").text()
                 val link = element.select("a").attr("href")
                 val poster = element.select("img").attr("data-src").ifEmpty { element.select("img").attr("src") }
-                
+
                 if (title.isNotEmpty()) {
                     items.add(newMovieSearchResponse(title, link, TvType.Movie) {
                         this.posterUrl = poster
@@ -64,7 +64,7 @@ class NetflixMirrorUltimate : MainAPI() {
                 }
             }
         } catch (e: Exception) {}
-        
+
         return newHomePageResponse("Netflix Mirror Content", items)
     }
 
@@ -93,10 +93,10 @@ class NetflixMirrorUltimate : MainAPI() {
     override suspend fun load(url: String): LoadResponse {
         val response = app.get("$mainUrl/mobile/post.php?id=$url", cookies = getCookies(), headers = getCommonHeaders())
         val document = Jsoup.parse(response.text)
-        
+
         val title = document.select(".title").text()
         val plot = document.select(".description").text()
-        
+
         // NetMirror requires TMDB ID for links
         val tmdbId = document.select("data-tmdb").attr("data-tmdb").ifEmpty { url }
 
@@ -115,10 +115,10 @@ class NetflixMirrorUltimate : MainAPI() {
         return try {
             val playerUrl = "https://net27.cc/newtv/player.php?id=$data"
             val response = app.get(playerUrl, headers = getCommonHeaders() + mapOf("Ott" to "nf"))
-            
+
             // The response contains the video_link
-            val videoLink = Pattern.compile("\"video_link\":\"(.*?)\"").matcher(response.text).let { 
-                if (it.find()) it.group(1).replace("\\/", "/") else null 
+            val videoLink = Pattern.compile("\"video_link\":\"(.*?)\"").matcher(response.text).let {
+                if (it.find()) it.group(1).replace("\\/", "/") else null
             }
 
             if (videoLink != null) {
