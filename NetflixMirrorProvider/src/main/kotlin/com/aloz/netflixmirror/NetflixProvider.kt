@@ -35,7 +35,7 @@ class NetflixMirrorUltimate : MainAPI() {
         "https://2embed.me"
     )
 
-    override suspend fun getMainPage(page: Int, request: HomePageRequest): HomePageResponse {
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         val items = mutableListOf<SearchResponse>()
         try {
             // Scrape trending/popular from a mirror site or a public list
