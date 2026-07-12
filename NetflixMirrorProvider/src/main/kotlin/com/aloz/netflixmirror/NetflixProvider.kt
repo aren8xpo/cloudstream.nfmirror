@@ -5,7 +5,6 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
 import com.lagradost.cloudstream3.utils.*
-import com.lagradost.cloudstream3.utils.ExtractorLink
 
 @CloudstreamPlugin
 class NetflixMirrorUltimatePlugin : Plugin() {
@@ -70,7 +69,6 @@ class NetflixMirrorUltimate : MainAPI() {
     override var supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
     override var hasMainPage = true
 
-    // Standard headers for all API calls
     private val apiHeaders = mapOf(
         "Accept" to "application/json",
         "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
@@ -78,7 +76,7 @@ class NetflixMirrorUltimate : MainAPI() {
 
     private fun MovieItem.toSearchResponse(): SearchResponse {
         val mediaType = if (type == "tv") "tv" else "movie"
-        // Store path as a unique string the load function can parse
+        // Ensure path always has the format "type/tmdbId"
         val dataPath = "$mediaType/$tmdbId"
         
         return if (type == "tv") {
@@ -120,20 +118,23 @@ class NetflixMirrorUltimate : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse {
-        // Handle full URLs if Cloudstream absolute-ifies them
-        val path = url.substringAfter("https://net27.cc/").substringAfter("http://net27.cc/").substringAfter("/")
+        // Clean URL to handle potential absolute paths or raw IDs
+        val path = url.substringAfter("https://net27.cc/").substringAfter("http://net27.cc/").removePrefix("/")
+        
+        // Split path into [type, id]
         val segments = path.split("/")
         
-        if (segments.size < 2) throw ErrorLoadingException("Invalid content path: $path")
-        
-        val mediaType = segments[0]
-        val tmdbId = segments[1]
+        // Fix for the logcat error: "Invalid content path: 83533"
+        // If there's no type prefix, we default to movie and use the whole string as ID
+        val mediaType = if (segments.size >= 2) segments[0] else "movie"
+        val tmdbId = if (segments.size >= 2) segments[1] else path
+
+        if (tmdbId.isBlank()) throw ErrorLoadingException("Empty content ID")
 
         val details = app.get("$mainUrl/api/catalog/title/$mediaType/$tmdbId", headers = apiHeaders)
-            .parsedSafe<MovieItem>() ?: throw ErrorLoadingException("Content metadata not found")
+            .parsedSafe<MovieItem>() ?: throw ErrorLoadingException("Content metadata not found for $mediaType/$tmdbId")
 
         return if (mediaType == "tv") {
-            // Standard episode structure for TV shows
             val episodes = listOf(
                 newEpisode("$tmdbId?type=tv") {
                     this.name = details.title
@@ -161,13 +162,12 @@ class NetflixMirrorUltimate : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // data now contains the query parameters (e.g. "12345?type=movie")
+        // data contains the query (e.g. "12345?type=movie")
         val embed = app.get("$mainUrl/api/embed-tmdb/$data", headers = apiHeaders)
             .parsedSafe<EmbedResponse>() ?: return false
 
         var foundAny = false
 
-        // 1. Process the streams array
         embed.streams.forEach { stream ->
             if (stream.url.isNotBlank()) {
                 callback.invoke(
@@ -185,7 +185,6 @@ class NetflixMirrorUltimate : MainAPI() {
             }
         }
 
-        // 2. Fallback to direct MP4 if available
         if (!foundAny && !embed.mp4.isNullOrBlank()) {
             callback.invoke(
                 newExtractorLink(
