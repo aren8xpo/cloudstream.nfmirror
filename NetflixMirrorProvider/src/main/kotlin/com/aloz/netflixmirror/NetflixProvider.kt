@@ -1,13 +1,11 @@
 package com.aloz.netflixmirror
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import org.jsoup.Jsoup
-import java.util.regex.Pattern
-import kotlin.random.Random
 
 @CloudstreamPlugin
 class NetflixMirrorUltimatePlugin : Plugin() {
@@ -16,93 +14,110 @@ class NetflixMirrorUltimatePlugin : Plugin() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Data classes for the new REST API
+// ---------------------------------------------------------------------------
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class MovieItem(
+    val tmdbId: Int = 0,
+    val title: String = "",
+    val poster: String? = null,
+    val overview: String? = null,
+    val rating: Double? = null,
+    val year: String? = null,
+    val type: String? = null
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class Rail(
+    val title: String = "",
+    val items: List<MovieItem> = emptyList()
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class CatalogResponse(
+    val rails: List<Rail> = emptyList()
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class SearchResponseJson(
+    val items: List<MovieItem> = emptyList()
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class Stream(
+    val url: String = "",
+    val resolution: Int? = null
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class EmbedResponse(
+    val tmdbId: Int = 0,
+    val title: String = "",
+    val poster: String? = null,
+    val year: String? = null,
+    val type: String? = null,
+    val streams: List<Stream> = emptyList()
+)
+
+// ---------------------------------------------------------------------------
+// Provider using the new REST API
+// ---------------------------------------------------------------------------
+
 class NetflixMirrorUltimate : MainAPI() {
-    // Standard NetMirror API configuration
     override var name = "Netflix Mirror Ultimate"
-    // Using the NetMirror-Extension's current working domains
-    override var mainUrl = "https://net22.cc"
+    override var mainUrl = "https://net27.cc"
     override var supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
     override var hasMainPage = true
 
-    private var cachedCookie: String = ""
-
-    private fun getCookies(): Map<String, String> {
-        return mapOf(
-            "t_hash_t" to cachedCookie,
-            "ott" to "nf",
-            "hd" to "on"
-        )
-    }
-
-    private fun getCommonHeaders(): Map<String, String> {
-        return mapOf(
-            "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-            "X-Requested-With" to "com.horis.cncverse"
-        )
+    private fun MovieItem.toSearchResponse(): SearchResponse {
+        return newMovieSearchResponse(
+            name  = title,
+            url   = tmdbId.toString(),
+            type  = if (type == "tv") TvType.TvSeries else TvType.Movie
+        ) {
+            posterUrl = poster
+        }
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
-        val items = mutableListOf<SearchResponse>()
-        try {
-            // First attempt: Check if we need to bypass
-            if (cachedCookie.isEmpty()) {
-                val response = app.post("https://net52.cc/verify.php", data = mapOf("g-recaptcha-response" to java.util.UUID.randomUUID().toString()))
-                cachedCookie = response.headers["Set-Cookie"]?.substringAfter("t_hash_t=")?.substringBefore(";") ?: ""
-            }
+        val catalog = app.get("$mainUrl/api/catalog/curated/trending")
+            .parsedSafe<CatalogResponse>() ?: return null
 
-            val response = app.get("$mainUrl/mobile/home?app=1", cookies = getCookies(), headers = getCommonHeaders())
-            val document = Jsoup.parse(response.text)
+        val homePageLists = catalog.rails.map { rail ->
+            HomePageList(
+                name  = rail.title,
+                list  = rail.items.map { it.toSearchResponse() },
+                isHorizontalImages = true
+            )
+        }
 
-            document.select(".tray-container .item").forEach { element ->
-                val title = element.select(".title, .name").text()
-                val link = element.select("a").attr("href")
-                val poster = element.select("img").attr("data-src").ifEmpty { element.select("img").attr("src") }
-
-                if (title.isNotEmpty()) {
-                    items.add(newMovieSearchResponse(title, link, TvType.Movie) {
-                        this.posterUrl = poster
-                    })
-                }
-            }
-        } catch (e: Exception) {}
-
-        return newHomePageResponse("Netflix Mirror Content", items)
+        return HomePageResponse(homePageLists)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val results = mutableListOf<SearchResponse>()
-        try {
-            // NetMirror uses a JSON search endpoint
-            val response = app.get("$mainUrl/mobile/search.php?query=$query", cookies = getCookies(), headers = getCommonHeaders())
-            // Note: In a real implementation, we would use .parsed<SearchData>()
-            // For now, let's use a robust JSoup fallback if search returns HTML
-            val document = Jsoup.parse(response.text)
-            document.select(".item").forEach { element ->
-                val title = element.select(".title").text()
-                val id = element.select("a").attr("href")
-                val poster = element.select("img").attr("src")
-                if (title.isNotEmpty()) {
-                    results.add(newMovieSearchResponse(title, id, TvType.Movie) {
-                        this.posterUrl = poster
-                    })
-                }
-            }
-        } catch (e: Exception) {}
-        return results
+        val result = app.get("$mainUrl/api/catalog/search?q=${query.encodeUri()}")
+            .parsedSafe<SearchResponseJson>() ?: return emptyList()
+
+        return result.items.map { it.toSearchResponse() }
     }
 
     override suspend fun load(url: String): LoadResponse {
-        val response = app.get("$mainUrl/mobile/post.php?id=$url", cookies = getCookies(), headers = getCommonHeaders())
-        val document = Jsoup.parse(response.text)
+        // We use tmdbId as the URL in search/mainPage
+        val type = "movie" // Fallback to movie, or we could pass type in the URL
+        val details = app.get("$mainUrl/api/catalog/title/$type/$url")
+            .parsedSafe<MovieItem>() ?: throw ErrorLoadingException("Content not found")
 
-        val title = document.select(".title").text()
-        val plot = document.select(".description").text()
-
-        // NetMirror requires TMDB ID for links
-        val tmdbId = document.select("data-tmdb").attr("data-tmdb").ifEmpty { url }
-
-        return newMovieLoadResponse(title, url, TvType.Movie, tmdbId) {
-            this.plot = plot
+        return newMovieLoadResponse(
+            name    = details.title,
+            url     = details.tmdbId.toString(),
+            type    = TvType.Movie,
+            dataUrl = details.tmdbId.toString()
+        ) {
+            posterUrl = details.poster
+            year      = details.year?.toIntOrNull()
+            plot      = details.overview
         }
     }
 
@@ -112,29 +127,25 @@ class NetflixMirrorUltimate : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // NetMirror uses a special player API
-        return try {
-            val playerUrl = "https://net27.cc/newtv/player.php?id=$data"
-            val response = app.get(playerUrl, headers = getCommonHeaders() + mapOf("Ott" to "nf"))
+        val embed = app.get("$mainUrl/api/embed-tmdb/$data?type=movie")
+            .parsedSafe<EmbedResponse>() ?: return false
 
-            // The response contains the video_link
-            val videoLink = Pattern.compile("\"video_link\":\"(.*?)\"").matcher(response.text).let {
-                if (it.find()) it.group(1).replace("\\/", "/") else null
-            }
+        if (embed.streams.isEmpty()) return false
 
-            if (videoLink != null) {
-                callback.invoke(newExtractorLink(
-                    "Netflix Mirror",
-                    "NetMirror [HLS]",
-                    videoLink,
-                    type = ExtractorLinkType.M3U8
+        embed.streams.forEach { stream ->
+            callback.invoke(
+                newExtractorLink(
+                    source  = "NetMirror",
+                    name    = "NetMirror ${stream.resolution ?: ""}p".trim(),
+                    url     = stream.url,
+                    type    = ExtractorLinkType.VIDEO
                 ) {
-                    this.referer = "https://net27.cc/"
-                })
-                true
-            } else false
-        } catch (e: Exception) {
-            false
+                    this.quality = stream.resolution ?: Qualities.Unknown.value
+                    this.referer = "$mainUrl/"
+                }
+            )
         }
+
+        return true
     }
 }
