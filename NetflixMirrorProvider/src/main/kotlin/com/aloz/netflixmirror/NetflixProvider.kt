@@ -5,16 +5,22 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
 import com.lagradost.cloudstream3.utils.*
+import com.lagradost.cloudstream3.utils.ExtractorLink
 
+/**
+ * Main Plugin class required by Cloudstream to load the provider.
+ */
 @CloudstreamPlugin
 class NetflixMirrorUltimatePlugin : Plugin() {
     override fun load(context: android.content.Context) {
+        // Registering the provider so it appears in the app's sources
         registerMainAPI(NetflixMirrorUltimate())
     }
 }
 
 // ---------------------------------------------------------------------------
-// Data classes for the new REST API
+// Data classes for the Net27 REST API
+// These match the observed JSON structure from the site's network traffic.
 // ---------------------------------------------------------------------------
 
 @JsonIgnoreProperties(ignoreUnknown = true)
@@ -23,6 +29,7 @@ data class MovieItem(
     val title: String = "",
     val poster: String? = null,
     val overview: String? = null,
+    val rating: Double? = null,
     val year: String? = null,
     val type: String? = null
 )
@@ -60,7 +67,7 @@ data class EmbedResponse(
 )
 
 // ---------------------------------------------------------------------------
-// Provider using the new REST API
+// Provider Implementation
 // ---------------------------------------------------------------------------
 
 class NetflixMirrorUltimate : MainAPI() {
@@ -69,11 +76,13 @@ class NetflixMirrorUltimate : MainAPI() {
     override var supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
     override var hasMainPage = true
 
+    // Standard headers for all API calls
     private val apiHeaders = mapOf(
         "Accept" to "application/json",
         "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
     )
 
+    // Helper to convert internal MovieItem to Cloudstream SearchResponse
     private fun MovieItem.toSearchResponse(): SearchResponse {
         val mediaType = if (type == "tv") "tv" else "movie"
         // Ensure path always has the format "type/tmdbId"
@@ -92,6 +101,9 @@ class NetflixMirrorUltimate : MainAPI() {
         }
     }
 
+    /**
+     * Fetches the home page rails (Trending, Top 10, etc.)
+     */
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         val catalog = app.get("$mainUrl/api/catalog/curated/trending", headers = apiHeaders)
             .parsedSafe<CatalogResponse>() ?: return null
@@ -109,6 +121,9 @@ class NetflixMirrorUltimate : MainAPI() {
         return newHomePageResponse(lists)
     }
 
+    /**
+     * Searches the catalog via the REST API
+     */
     override suspend fun search(query: String): List<SearchResponse> {
         val encodedQuery = java.net.URLEncoder.encode(query, "UTF-8")
         val result = app.get("$mainUrl/api/catalog/search?q=$encodedQuery", headers = apiHeaders)
@@ -117,6 +132,9 @@ class NetflixMirrorUltimate : MainAPI() {
         return result.items.map { it.toSearchResponse() }
     }
 
+    /**
+     * Loads detailed info for a specific title
+     */
     override suspend fun load(url: String): LoadResponse {
         // Clean URL to handle potential absolute paths or raw IDs
         val path = url.substringAfter("https://net27.cc/").substringAfter("http://net27.cc/").removePrefix("/")
@@ -156,18 +174,22 @@ class NetflixMirrorUltimate : MainAPI() {
         }
     }
 
+    /**
+     * Fetches the actual video streaming links
+     */
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // data contains the query (e.g. "12345?type=movie")
+        // Fetch embed data which contains direct MP4 or M3U8 links
         val embed = app.get("$mainUrl/api/embed-tmdb/$data", headers = apiHeaders)
             .parsedSafe<EmbedResponse>() ?: return false
 
         var foundAny = false
 
+        // 1. Check direct stream list
         embed.streams.forEach { stream ->
             if (stream.url.isNotBlank()) {
                 callback.invoke(
@@ -178,13 +200,15 @@ class NetflixMirrorUltimate : MainAPI() {
                         type = ExtractorLinkType.VIDEO
                     ) {
                         this.quality = stream.resolution ?: Qualities.Unknown.value
-                        this.referer = "$mainUrl/"
+                        // Fix for 403 Forbidden: Use the exact URL the server expects
+                        this.referer = "https://h5.aoneroom.com/"
                     }
                 )
                 foundAny = true
             }
         }
 
+        // 2. Fallback to main MP4 link if streams list is empty
         if (!foundAny && !embed.mp4.isNullOrBlank()) {
             callback.invoke(
                 newExtractorLink(
@@ -194,7 +218,8 @@ class NetflixMirrorUltimate : MainAPI() {
                     type = ExtractorLinkType.VIDEO
                 ) {
                     this.quality = embed.resolution?.toIntOrNull() ?: Qualities.Unknown.value
-                    this.referer = "$mainUrl/"
+                    // Fix for 403 Forbidden: Use the exact URL the server expects
+                    this.referer = "https://h5.aoneroom.com/"
                 }
             )
             foundAny = true
