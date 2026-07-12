@@ -17,6 +17,7 @@ class NetflixMirrorUltimatePlugin : Plugin() {
 }
 
 class NetflixMirrorUltimate : MainAPI() {
+    // Standard NetMirror API configuration
     override var name = "Netflix Mirror Ultimate"
     // Using the NetMirror-Extension's current working domains
     override var mainUrl = "https://net22.cc"
