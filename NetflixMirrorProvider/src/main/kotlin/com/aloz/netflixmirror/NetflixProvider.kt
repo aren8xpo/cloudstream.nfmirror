@@ -72,12 +72,16 @@ class NetflixMirrorUltimate : MainAPI() {
     override var hasMainPage = true
 
     private fun MovieItem.toSearchResponse(): SearchResponse {
-        return if (type == "tv") {
-            newTvSeriesSearchResponse(title, tmdbId.toString(), TvType.TvSeries) {
+        val itemType = if (type == "tv") TvType.TvSeries else TvType.Movie
+        // Include the type in the URL so the 'load' function knows which endpoint to call
+        val path = if (type == "tv") "tv/$tmdbId" else "movie/$tmdbId"
+        
+        return if (itemType == TvType.TvSeries) {
+            newTvSeriesSearchResponse(title, path, TvType.TvSeries) {
                 posterUrl = poster
             }
         } else {
-            newMovieSearchResponse(title, tmdbId.toString(), TvType.Movie) {
+            newMovieSearchResponse(title, path, TvType.Movie) {
                 posterUrl = poster
             }
         }
@@ -107,28 +111,26 @@ class NetflixMirrorUltimate : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse {
-        val details = try {
-            app.get("$mainUrl/api/catalog/title/movie/$url").parsedSafe<MovieItem>()
-                ?: app.get("$mainUrl/api/catalog/title/tv/$url").parsedSafe<MovieItem>()
-        } catch (e: Exception) {
-            null
-        } ?: throw ErrorLoadingException("Content not found")
+        // url is now "movie/ID" or "tv/ID"
+        val details = app.get("$mainUrl/api/catalog/title/$url")
+            .parsedSafe<MovieItem>() ?: throw ErrorLoadingException("Content not found")
 
-        val isTv = details.type == "tv"
+        val isTv = url.startsWith("tv/")
+        val tmdbId = url.substringAfter("/")
         
         return if (isTv) {
-            val episodes = listOf(newEpisode(url) { 
+            val episodes = listOf(newEpisode(tmdbId) { 
                 this.name = "Play"
                 this.season = 1
                 this.episode = 1 
             })
-            newTvSeriesLoadResponse(details.title, details.tmdbId.toString(), TvType.TvSeries, episodes) {
+            newTvSeriesLoadResponse(details.title, url, TvType.TvSeries, episodes) {
                 posterUrl = details.poster
                 year      = details.year?.toIntOrNull()
                 plot      = details.overview
             }
         } else {
-            newMovieLoadResponse(details.title, details.tmdbId.toString(), TvType.Movie, details.tmdbId.toString()) {
+            newMovieLoadResponse(details.title, url, TvType.Movie, tmdbId) {
                 posterUrl = details.poster
                 year      = details.year?.toIntOrNull()
                 plot      = details.overview
@@ -142,6 +144,7 @@ class NetflixMirrorUltimate : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        // data contains the tmdbId
         val embed = app.get("$mainUrl/api/embed-tmdb/$data?type=movie").parsedSafe<EmbedResponse>()
             ?: app.get("$mainUrl/api/embed-tmdb/$data?type=tv&se=1&ep=1").parsedSafe<EmbedResponse>()
             ?: return false
