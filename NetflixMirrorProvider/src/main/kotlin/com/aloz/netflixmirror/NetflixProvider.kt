@@ -7,20 +7,15 @@ import com.lagradost.cloudstream3.plugins.Plugin
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 
-/**
- * Main Plugin class required by Cloudstream to load the provider.
- */
 @CloudstreamPlugin
 class NetflixMirrorUltimatePlugin : Plugin() {
     override fun load(context: android.content.Context) {
-        // Registering the provider so it appears in the app's sources
         registerMainAPI(NetflixMirrorUltimate())
     }
 }
 
 // ---------------------------------------------------------------------------
-// Data classes for the Net27 REST API
-// These match the observed JSON structure from the site's network traffic.
+// Data classes for the new REST API
 // ---------------------------------------------------------------------------
 
 @JsonIgnoreProperties(ignoreUnknown = true)
@@ -29,7 +24,6 @@ data class MovieItem(
     val title: String = "",
     val poster: String? = null,
     val overview: String? = null,
-    val rating: Double? = null,
     val year: String? = null,
     val type: String? = null
 )
@@ -67,7 +61,7 @@ data class EmbedResponse(
 )
 
 // ---------------------------------------------------------------------------
-// Provider Implementation
+// Provider using the new REST API
 // ---------------------------------------------------------------------------
 
 class NetflixMirrorUltimate : MainAPI() {
@@ -76,30 +70,32 @@ class NetflixMirrorUltimate : MainAPI() {
     override var supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
     override var hasMainPage = true
 
-    // Helper to convert internal MovieItem to Cloudstream SearchResponse
+    // Standard headers for all API calls
+    private val apiHeaders = mapOf(
+        "Accept" to "application/json",
+        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+    )
+
     private fun MovieItem.toSearchResponse(): SearchResponse {
-        val mediaType = if (type == "tv") TvType.TvSeries else TvType.Movie
-        // Include type in path so load() knows which endpoint to call
-        val path = if (type == "tv") "tv/$tmdbId" else "movie/$tmdbId"
+        val mediaType = if (type == "tv") "tv" else "movie"
+        // Store path as a unique string the load function can parse
+        val dataPath = "$mediaType/$tmdbId"
         
-        return if (mediaType == TvType.TvSeries) {
-            newTvSeriesSearchResponse(title, path, TvType.TvSeries) {
+        return if (type == "tv") {
+            newTvSeriesSearchResponse(title, dataPath, TvType.TvSeries) {
                 this.posterUrl = poster
                 this.year = this@toSearchResponse.year?.toIntOrNull()
             }
         } else {
-            newMovieSearchResponse(title, path, TvType.Movie) {
+            newMovieSearchResponse(title, dataPath, TvType.Movie) {
                 this.posterUrl = poster
                 this.year = this@toSearchResponse.year?.toIntOrNull()
             }
         }
     }
 
-    /**
-     * Fetches the home page rails (Trending, Top 10, etc.)
-     */
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
-        val catalog = app.get("$mainUrl/api/catalog/curated/trending")
+        val catalog = app.get("$mainUrl/api/catalog/curated/trending", headers = apiHeaders)
             .parsedSafe<CatalogResponse>() ?: return null
 
         val lists = catalog.rails
@@ -115,34 +111,31 @@ class NetflixMirrorUltimate : MainAPI() {
         return newHomePageResponse(lists)
     }
 
-    /**
-     * Searches the catalog via the REST API
-     */
     override suspend fun search(query: String): List<SearchResponse> {
         val encodedQuery = java.net.URLEncoder.encode(query, "UTF-8")
-        val result = app.get("$mainUrl/api/catalog/search?q=$encodedQuery")
+        val result = app.get("$mainUrl/api/catalog/search?q=$encodedQuery", headers = apiHeaders)
             .parsedSafe<SearchResponseJson>() ?: return emptyList()
 
         return result.items.map { it.toSearchResponse() }
     }
 
-    /**
-     * Loads detailed info for a specific title
-     */
     override suspend fun load(url: String): LoadResponse {
-        val segments = url.split("/")
-        if (segments.size < 2) throw ErrorLoadingException("Invalid URL structure: $url")
+        // Handle full URLs if Cloudstream absolute-ifies them
+        val path = url.substringAfter("https://net27.cc/").substringAfter("http://net27.cc/").substringAfter("/")
+        val segments = path.split("/")
+        
+        if (segments.size < 2) throw ErrorLoadingException("Invalid content path: $path")
         
         val mediaType = segments[0]
         val tmdbId = segments[1]
 
-        val details = app.get("$mainUrl/api/catalog/title/$mediaType/$tmdbId")
+        val details = app.get("$mainUrl/api/catalog/title/$mediaType/$tmdbId", headers = apiHeaders)
             .parsedSafe<MovieItem>() ?: throw ErrorLoadingException("Content metadata not found")
 
         return if (mediaType == "tv") {
-            // Simplified: creates a "Play" episode for TV shows to trigger extraction
+            // Standard episode structure for TV shows
             val episodes = listOf(
-                newEpisode(tmdbId) {
+                newEpisode("$tmdbId?type=tv") {
                     this.name = details.title
                     this.season = 1
                     this.episode = 1
@@ -154,7 +147,7 @@ class NetflixMirrorUltimate : MainAPI() {
                 this.plot = details.overview
             }
         } else {
-            newMovieLoadResponse(details.title, url, TvType.Movie, tmdbId) {
+            newMovieLoadResponse(details.title, url, TvType.Movie, "$tmdbId?type=movie") {
                 this.posterUrl = details.poster
                 this.year = details.year?.toIntOrNull()
                 this.plot = details.overview
@@ -162,22 +155,19 @@ class NetflixMirrorUltimate : MainAPI() {
         }
     }
 
-    /**
-     * Fetches the actual video streaming links
-     */
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Fetch embed data which contains direct MP4 or M3U8 links
-        val embed = app.get("$mainUrl/api/embed-tmdb/$data")
+        // data now contains the query parameters (e.g. "12345?type=movie")
+        val embed = app.get("$mainUrl/api/embed-tmdb/$data", headers = apiHeaders)
             .parsedSafe<EmbedResponse>() ?: return false
 
         var foundAny = false
 
-        // 1. Check direct stream list
+        // 1. Process the streams array
         embed.streams.forEach { stream ->
             if (stream.url.isNotBlank()) {
                 callback.invoke(
@@ -195,7 +185,7 @@ class NetflixMirrorUltimate : MainAPI() {
             }
         }
 
-        // 2. Fallback to main MP4 link if streams list is empty
+        // 2. Fallback to direct MP4 if available
         if (!foundAny && !embed.mp4.isNullOrBlank()) {
             callback.invoke(
                 newExtractorLink(
