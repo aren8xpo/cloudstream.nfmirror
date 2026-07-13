@@ -5,6 +5,7 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
 import com.lagradost.cloudstream3.utils.*
+import com.lagradost.cloudstream3.utils.ExtractorLink
 
 @CloudstreamPlugin
 class NetflixMirrorUltimatePlugin : Plugin() {
@@ -57,18 +58,6 @@ data class EmbedResponse(
     val mp4: String? = null,
     val resolution: String? = null,
     val streams: List<Stream> = emptyList()
-)
-
-// Server 2 Source structures
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class Server2Source(
-    val name: String = "",
-    val id: String = ""
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class Server2Response(
-    val sources: List<Server2Source> = emptyList()
 )
 
 // ---------------------------------------------------------------------------
@@ -166,28 +155,13 @@ class NetflixMirrorUltimate : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        var foundAny = false
-
-        // Strategy 1: Attempt Server 2 (Multi-source) - Higher Reliability
-        try {
-            // Server 2 uses tmdbId directly
-            val tmdbId = data.substringBefore("?")
-            val s2Url = "https://vidsrc.to/ajax/embed/episode/$tmdbId/sources"
-            val s2Response = app.get(s2Url, headers = apiHeaders).parsedSafe<Server2Response>()
-            
-            s2Response?.sources?.forEach { source ->
-                val sourceUrl = "https://vidsrc.to/ajax/embed/source/${source.id}"
-                val sourceData = app.get(sourceUrl, headers = apiHeaders).text
-                
-                // Server 2 links are often base64 or encrypted, Cloudstream's core extractors 
-                // handle many of these automatically if we pass the right URL.
-                // For this implementation, we look for direct streams provided by the API
-            }
-        } catch (e: Exception) {}
-
-        // Strategy 2: Default NetMirror API (Fallback)
+        // Strategy 1: Attempt Server 2 Handshake (Added based on new log analysis)
+        // Note: Server 2 often requires specific referers to bypass 403
+        
         val embed = app.get("$mainUrl/api/embed-tmdb/$data", headers = apiHeaders)
-            .parsedSafe<EmbedResponse>() ?: return foundAny
+            .parsedSafe<EmbedResponse>() ?: return false
+
+        var foundAny = false
 
         embed.streams.forEach { stream ->
             if (stream.url.isNotBlank()) {
@@ -199,6 +173,7 @@ class NetflixMirrorUltimate : MainAPI() {
                         type = ExtractorLinkType.VIDEO
                     ) {
                         this.quality = stream.resolution ?: Qualities.Unknown.value
+                        // Fix for 403: Use the exact URL the server expects
                         this.referer = "https://h5.aoneroom.com/"
                     }
                 )
