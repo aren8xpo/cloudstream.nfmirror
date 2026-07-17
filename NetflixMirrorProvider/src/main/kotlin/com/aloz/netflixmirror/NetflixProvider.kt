@@ -70,15 +70,17 @@ class NetflixMirrorUltimate : MainAPI() {
     override var supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
     override var hasMainPage = true
 
+    // Enhanced headers with proper referer for better compatibility
     private val apiHeaders = mapOf(
         "Accept" to "application/json",
-        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+        "Referer" to "https://h5.aoneroom.com/"
     )
 
     private fun MovieItem.toSearchResponse(): SearchResponse {
         val mediaType = if (type == "tv") "tv" else "movie"
         val dataPath = "$mediaType/$tmdbId"
-        
+
         return if (type == "tv") {
             newTvSeriesSearchResponse(title, dataPath, TvType.TvSeries) {
                 this.posterUrl = poster
@@ -93,59 +95,75 @@ class NetflixMirrorUltimate : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
-        val catalog = app.get("$mainUrl/api/catalog/curated/trending", headers = apiHeaders)
-            .parsedSafe<CatalogResponse>() ?: return null
+        try {
+            val catalog = app.get("$mainUrl/api/catalog/curated/trending", headers = apiHeaders)
+                .parsedSafe<CatalogResponse>() ?: return null
 
-        val lists = catalog.rails
-            .filter { it.items.isNotEmpty() }
-            .map { rail ->
-                HomePageList(
-                    name = rail.title,
-                    list = rail.items.map { it.toSearchResponse() },
-                    isHorizontalImages = true
-                )
-            }
+            val lists = catalog.rails
+                .filter { it.items.isNotEmpty() }
+                .map { rail ->
+                    HomePageList(
+                        name = rail.title,
+                        list = rail.items.map { it.toSearchResponse() },
+                        isHorizontalImages = true
+                    )
+                }
 
-        return newHomePageResponse(lists)
+            return newHomePageResponse(lists)
+        } catch (e: Exception) {
+            // Log error for debugging
+            println("NetflixMirrorUltimate: Error in getMainPage: ${e.message}")
+            return null
+        }
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val encodedQuery = java.net.URLEncoder.encode(query, "UTF-8")
-        val result = app.get("$mainUrl/api/catalog/search?q=$encodedQuery", headers = apiHeaders)
-            .parsedSafe<SearchResponseJson>() ?: return emptyList()
+        try {
+            val encodedQuery = java.net.URLEncoder.encode(query, "UTF-8")
+            val result = app.get("$mainUrl/api/catalog/search?q=$encodedQuery", headers = apiHeaders)
+                .parsedSafe<SearchResponseJson>() ?: return emptyList()
 
-        return result.items.map { it.toSearchResponse() }
+            return result.items.map { it.toSearchResponse() }
+        } catch (e: Exception) {
+            println("NetflixMirrorUltimate: Error in search: ${e.message}")
+            return emptyList()
+        }
     }
 
     override suspend fun load(url: String): LoadResponse {
-        val path = url.substringAfter("https://net27.cc/").substringAfter("http://net27.cc/").removePrefix("/")
-        val segments = path.split("/")
-        
-        val mediaType = if (segments.size >= 2) segments[0] else "movie"
-        val tmdbId = if (segments.size >= 2) segments[1] else path
+        try {
+            val path = url.substringAfter("https://net27.cc/").substringAfter("http://net27.cc/").removePrefix("/")
+            val segments = path.split("/")
 
-        val details = app.get("$mainUrl/api/catalog/title/$mediaType/$tmdbId", headers = apiHeaders)
-            .parsedSafe<MovieItem>() ?: throw ErrorLoadingException("Content metadata not found")
+            val mediaType = if (segments.size >= 2) segments[0] else "movie"
+            val tmdbId = if (segments.size >= 2) segments[1] else path
 
-        return if (mediaType == "tv") {
-            val episodes = listOf(
-                newEpisode("$tmdbId?type=tv") {
-                    this.name = details.title
-                    this.season = 1
-                    this.episode = 1
+            val details = app.get("$mainUrl/api/catalog/title/$mediaType/$tmdbId", headers = apiHeaders)
+                .parsedSafe<MovieItem>() ?: throw ErrorLoadingException("Content metadata not found")
+
+            return if (mediaType == "tv") {
+                val episodes = listOf(
+                    newEpisode("$tmdbId?type=tv") {
+                        this.name = details.title
+                        this.season = 1
+                        this.episode = 1
+                    }
+                )
+                newTvSeriesLoadResponse(details.title, url, TvType.TvSeries, episodes) {
+                    this.posterUrl = details.poster
+                    this.year = details.year?.toIntOrNull()
+                    this.plot = details.overview
                 }
-            )
-            newTvSeriesLoadResponse(details.title, url, TvType.TvSeries, episodes) {
-                this.posterUrl = details.poster
-                this.year = details.year?.toIntOrNull()
-                this.plot = details.overview
+            } else {
+                newMovieLoadResponse(details.title, url, TvType.Movie, "$tmdbId?type=movie") {
+                    this.posterUrl = details.poster
+                    this.year = details.year?.toIntOrNull()
+                    this.plot = details.overview
+                }
             }
-        } else {
-            newMovieLoadResponse(details.title, url, TvType.Movie, "$tmdbId?type=movie") {
-                this.posterUrl = details.poster
-                this.year = details.year?.toIntOrNull()
-                this.plot = details.overview
-            }
+        } catch (e: Exception) {
+            println("NetflixMirrorUltimate: Error in load: ${e.message}")
+            throw ErrorLoadingException("Failed to load content: ${e.message}")
         }
     }
 
@@ -155,47 +173,66 @@ class NetflixMirrorUltimate : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Strategy 1: Attempt Server 2 Handshake (Added based on new log analysis)
-        // Note: Server 2 often requires specific referers to bypass 403
-        
-        val embed = app.get("$mainUrl/api/embed-tmdb/$data", headers = apiHeaders)
-            .parsedSafe<EmbedResponse>() ?: return false
+        try {
+            // Strategy 1: Attempt Server 2 Handshake with enhanced headers
+            val embedHeaders = mapOf(
+                "Accept" to "application/json",
+                "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+                "Referer" to "https://h5.aoneroom.com/"
+            )
 
-        var foundAny = false
+            val embed = app.get("$mainUrl/api/embed-tmdb/$data", headers = embedHeaders)
+                .parsedSafe<EmbedResponse>() ?: return false
 
-        embed.streams.forEach { stream ->
-            if (stream.url.isNotBlank()) {
+            var foundAny = false
+
+            // Process streams
+            embed.streams.forEach { stream ->
+                if (stream.url.isNotBlank()) {
+                    callback.invoke(
+                        newExtractorLink(
+                            source = "NetMirror",
+                            name = "NetMirror ${stream.resolution ?: "?"}p",
+                            url = stream.url,
+                            type = ExtractorLinkType.VIDEO
+                        ) {
+                            this.quality = stream.resolution ?: Qualities.Unknown.value
+                            this.referer = "https://h5.aoneroom.com/"
+                            // Add additional headers that might be needed
+                            this.headers = mapOf(
+                                "Referer" to "https://h5.aoneroom.com/",
+                                "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+                            )
+                        }
+                    )
+                    foundAny = true
+                }
+            }
+
+            // Process direct MP4 link if available
+            if (!foundAny && !embed.mp4.isNullOrBlank()) {
                 callback.invoke(
                     newExtractorLink(
                         source = "NetMirror",
-                        name = "NetMirror ${stream.resolution ?: "?"}p",
-                        url = stream.url,
+                        name = "NetMirror ${embed.resolution ?: "?"}p",
+                        url = embed.mp4!!,
                         type = ExtractorLinkType.VIDEO
                     ) {
-                        this.quality = stream.resolution ?: Qualities.Unknown.value
-                        // Fix for 403: Use the exact URL the server expects
+                        this.quality = embed.resolution?.toIntOrNull() ?: Qualities.Unknown.value
                         this.referer = "https://h5.aoneroom.com/"
+                        this.headers = mapOf(
+                            "Referer" to "https://h5.aoneroom.com/",
+                            "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+                        )
                     }
                 )
                 foundAny = true
             }
-        }
 
-        if (!foundAny && !embed.mp4.isNullOrBlank()) {
-            callback.invoke(
-                newExtractorLink(
-                    source = "NetMirror",
-                    name = "NetMirror ${embed.resolution ?: "?"}p",
-                    url = embed.mp4!!,
-                    type = ExtractorLinkType.VIDEO
-                ) {
-                    this.quality = embed.resolution?.toIntOrNull() ?: Qualities.Unknown.value
-                    this.referer = "https://h5.aoneroom.com/"
-                }
-            )
-            foundAny = true
+            return foundAny
+        } catch (e: Exception) {
+            println("NetflixMirrorUltimate: Error in loadLinks: ${e.message}")
+            return false
         }
-
-        return foundAny
     }
 }
